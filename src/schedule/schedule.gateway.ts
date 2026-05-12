@@ -15,15 +15,20 @@ import {
   WsResponse,
 } from "@nestjs/websockets"
 import * as Sentry from "@sentry/nestjs"
+import { Type } from "class-transformer"
 import {
   IsBoolean,
   IsIn,
   IsInt,
+  IsLatitude,
+  IsLongitude,
   IsNotEmpty,
+  IsNumber,
   IsOptional,
   IsString,
   Max,
   Min,
+  ValidateNested,
 } from "class-validator"
 import { randomUUID, UUID } from "crypto"
 import { IncomingMessage } from "http"
@@ -49,6 +54,14 @@ import {
   ScheduleUpdate,
 } from "./schedule.service"
 
+export class WalkingFromDto {
+  @IsLatitude()
+  lat!: number
+
+  @IsLongitude()
+  lon!: number
+}
+
 export class ScheduleSubscriptionDto {
   @IsString()
   @IsOptional()
@@ -70,6 +83,20 @@ export class ScheduleSubscriptionDto {
   @IsIn(["sequential", "nextPerRoute"])
   @IsOptional()
   listMode?: "sequential" | "nextPerRoute"
+
+  // When provided, the API will compute per-stop walking-time offsets
+  // (haversine distance / walkSpeedMs) and use them in place of any
+  // route-stop-pair offsets from routeStopPairs.
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => WalkingFromDto)
+  walkingFrom?: WalkingFromDto
+
+  @IsOptional()
+  @IsNumber()
+  @Min(0.1)
+  @Max(10)
+  walkSpeedMs?: number
 }
 
 type WebSocket = BaseWebSocket & {
@@ -146,6 +173,8 @@ export class ScheduleGateway
       limit: subscriptionDto.limit,
       sortByDeparture: subscriptionDto.sortByDeparture,
       listMode: subscriptionDto.listMode,
+      walkingFrom: subscriptionDto.walkingFrom,
+      walkSpeedMs: subscriptionDto.walkSpeedMs,
     }
 
     const scheduleUpdates$ = this.scheduleService

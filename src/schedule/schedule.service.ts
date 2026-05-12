@@ -47,6 +47,40 @@ export interface ScheduleOptions {
   limit: number
   sortByDeparture?: boolean
   listMode?: "sequential" | "nextPerRoute"
+  // When set, the API computes per-stop walking-time offsets
+  // (haversine(walkingFrom, stop) / walkSpeedMs) and applies them as
+  // negative offsets to each trip's arrival/departure times, in place
+  // of any per-pair offset provided in `routes`.
+  walkingFrom?: { lat: number; lon: number }
+  walkSpeedMs?: number
+}
+
+const DEFAULT_WALK_SPEED_MS = 1.4 // ~5 km/h, typical adult pace
+const EARTH_RADIUS_M = 6_371_000
+
+function haversineMeters(
+  a: { lat: number; lon: number },
+  b: { lat: number; lon: number },
+): number {
+  const toRad = (deg: number) => (deg * Math.PI) / 180
+  const dLat = toRad(b.lat - a.lat)
+  const dLon = toRad(b.lon - a.lon)
+  const lat1 = toRad(a.lat)
+  const lat2 = toRad(b.lat)
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2
+  return 2 * EARTH_RADIUS_M * Math.asin(Math.sqrt(h))
+}
+
+// Exported for unit testing.
+export function walkingOffsetSecondsForStop(
+  walkingFrom: { lat: number; lon: number },
+  stop: { lat: number; lon: number },
+  walkSpeedMs: number = DEFAULT_WALK_SPEED_MS,
+): number {
+  const secs = Math.round(haversineMeters(walkingFrom, stop) / walkSpeedMs)
+  return secs === 0 ? 0 : -secs
 }
 
 @Injectable()
@@ -61,7 +95,14 @@ export class ScheduleService {
   @SentryTraced()
   private async getUpcomingTrips(
     provider: FeedProvider,
-    { routes, limit, sortByDeparture, listMode }: ScheduleOptions,
+    {
+      routes,
+      limit,
+      sortByDeparture,
+      listMode,
+      walkingFrom,
+      walkSpeedMs,
+    }: ScheduleOptions,
   ): Promise<ScheduleUpdate> {
     const span = Sentry.getActiveSpan()
     if (span) {
@@ -69,24 +110,57 @@ export class ScheduleService {
       span.setAttribute("schedule_options.limit", limit)
       span.setAttribute("schedule_options.sortByDeparture", sortByDeparture)
       span.setAttribute("schedule_options.listMode", listMode)
+      span.setAttribute(
+        "schedule_options.walking_from",
+        walkingFrom ? JSON.stringify(walkingFrom) : "none",
+      )
     }
 
     const upcomingTrips =
       await provider.getUpcomingTripsForRoutesAtStops(routes)
 
+    // If walkingFrom is provided, compute per-stop walking-time offsets in
+    // parallel. These override any per-pair offsets passed in `routes`.
+    const walkingOffsetByStop = new Map<string, number>()
+    if (walkingFrom) {
+      const uniqueStopIds = Array.from(
+        new Set(upcomingTrips.map((t) => t.stopId)),
+      )
+      const stopLookups = await Promise.all(
+        uniqueStopIds.map((stopId) =>
+          provider
+            .getStop(stopId)
+            .then((stop) => ({ stopId, stop }))
+            .catch((e) => {
+              this.logger.warn(
+                `walking-offset: failed to resolve stop ${stopId}: ${e.message}`,
+              )
+              return null
+            }),
+        ),
+      )
+      for (const lookup of stopLookups) {
+        if (!lookup) continue
+        walkingOffsetByStop.set(
+          lookup.stopId,
+          walkingOffsetSecondsForStop(walkingFrom, lookup.stop, walkSpeedMs),
+        )
+      }
+    }
+
     const sortKey = sortByDeparture ? "departureTime" : "arrivalTime"
     let trips: ScheduleTrip[] = upcomingTrips
       .map((trip) => {
-        const offset = routes.find(
+        const walkingOffset = walkingOffsetByStop.get(trip.stopId)
+        const pairOffset = routes.find(
           (r) => r.routeId === trip.routeId && r.stopId === trip.stopId,
         )?.offset
+        const offset = walkingOffset ?? pairOffset ?? 0
 
         return {
           ...trip,
-          arrivalTime:
-            new Date(trip.arrivalTime).getTime() / 1000 + (offset ?? 0),
-          departureTime:
-            new Date(trip.departureTime).getTime() / 1000 + (offset ?? 0),
+          arrivalTime: new Date(trip.arrivalTime).getTime() / 1000 + offset,
+          departureTime: new Date(trip.departureTime).getTime() / 1000 + offset,
         }
       })
       .filter((trip) => trip[sortKey] > Date.now() / 1000)
