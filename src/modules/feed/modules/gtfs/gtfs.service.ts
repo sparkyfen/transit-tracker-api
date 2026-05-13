@@ -309,7 +309,7 @@ export class GtfsService implements FeedProvider {
         const { tripUpdate, stopTimeUpdate } =
           this.realtimeService.matchTripToTripUpdate(staticTrip, tripUpdates)
 
-        const { arrivalTime, departureTime, isRealtime } =
+        const { arrivalTime, departureTime, isRealtime, delaySeconds } =
           this.realtimeService.resolveTripTimes(staticTrip, stopTimeUpdate)
 
         if (departureTime.getTime() < now) {
@@ -375,6 +375,7 @@ export class GtfsService implements FeedProvider {
           arrivalTime,
           departureTime,
           isRealtime,
+          delaySeconds,
         })
         tripStopBucketKeys.push(
           `${staticTrip.route_id}|${staticTrip.stop_id}|${staticTrip.start_date}`,

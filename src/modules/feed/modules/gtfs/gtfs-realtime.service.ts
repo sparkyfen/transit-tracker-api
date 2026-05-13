@@ -206,13 +206,23 @@ export class GtfsRealtimeService {
         departureTime: scheduledDepartureTime,
         arrivalTime: scheduledArrivalTime,
         isRealtime: false,
+        delaySeconds: undefined,
       }
     }
+
+    // Delay = predicted - scheduled, in seconds. Positive = late, negative = early.
+    // Only meaningful when we have a realtime update; otherwise undefined.
+    const delaySeconds = stopTimeUpdate
+      ? Math.round(
+          (arrivalTime.getTime() - scheduledArrivalTime.getTime()) / 1000,
+        )
+      : undefined
 
     return {
       departureTime,
       arrivalTime,
       isRealtime: !!stopTimeUpdate,
+      delaySeconds,
     }
   }
 
