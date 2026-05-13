@@ -34,6 +34,7 @@ export interface ScheduleTrip {
   remainingTrips?: number  // Number of trips remaining after this one for the same route/stop today
   tripsRemainingToday?: number  // Trips remaining for the rest of the GTFS service day for the same route/stop. Set by GTFS-static providers; undefined when only realtime data is available.
   delaySeconds?: number  // Seconds the realtime prediction differs from the static schedule. Positive = late, negative = early. Undefined when no realtime data is available.
+  walkingOffsetSeconds?: number  // Walking-time offset that was applied to arrivalTime/departureTime when walkingFrom was provided in the subscription. Negative = walking time subtracted. Undefined when walkingFrom was not provided. Lets clients reconstruct the underlying arrival time (= arrivalTime - walkingOffsetSeconds).
 }
 
 export interface ScheduleUpdate {
@@ -162,6 +163,7 @@ export class ScheduleService {
           ...trip,
           arrivalTime: new Date(trip.arrivalTime).getTime() / 1000 + offset,
           departureTime: new Date(trip.departureTime).getTime() / 1000 + offset,
+          walkingOffsetSeconds: walkingOffset,
         }
       })
       .filter((trip) => trip[sortKey] > Date.now() / 1000)
