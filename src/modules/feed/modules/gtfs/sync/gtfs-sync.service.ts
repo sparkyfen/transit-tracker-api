@@ -23,6 +23,24 @@ import { upsertImportMetadata } from "./queries/upsert-import-metadata.queries"
 import { WebResourceMetadata, WebResourceService } from "./web-resource.service"
 import { ZipFileService } from "./zip-file.service"
 
+// How long a sync lock may be held before another sync treats it as abandoned.
+// Comfortably longer than any real import (they run in minutes), and short
+// enough that the next nightly sync recovers on its own.
+const STALE_SYNC_LOCK_SECONDS = 6 * 60 * 60
+
+/**
+ * Takes the sync lock for a feed, reclaiming it if the previous holder left it
+ * behind. Exported so tests can exercise the real statement.
+ *
+ * $1 = feed code, $2 = seconds after which a held lock counts as abandoned.
+ * Returns no rows when a live sync still holds the lock. `xmax <> 0` is true
+ * when the row was updated rather than inserted, i.e. a lock was reclaimed.
+ */
+export const OBTAIN_SYNC_LOCK_SQL = `INSERT INTO sync_lock (feed_code) VALUES ($1)
+   ON CONFLICT (feed_code) DO UPDATE SET locked_at = now()
+     WHERE sync_lock.locked_at < now() - ($2 * interval '1 second')
+   RETURNING xmax <> 0 AS reclaimed`
+
 @Injectable()
 export class GtfsSyncService {
   private readonly logger: Logger
@@ -173,13 +191,30 @@ export class GtfsSyncService {
   }
 
   private async obtainSyncLock() {
+    let result: { rows: any[]; rowCount: number }
+
     try {
-      await this.db.query("INSERT INTO sync_lock (feed_code) VALUES ($1)", [
+      result = await this.db.query(OBTAIN_SYNC_LOCK_SQL, [
         this.feedCode,
+        STALE_SYNC_LOCK_SECONDS,
       ])
     } catch (e: any) {
       throw new Error(
         `Could not obtain sync lock for feed ${this.feedCode}: ${e.message}`,
+      )
+    }
+
+    if (result.rowCount === 0) {
+      throw new Error(
+        `Could not obtain sync lock for feed ${this.feedCode}: ` +
+          `a sync started less than ${STALE_SYNC_LOCK_SECONDS}s ago is still holding it`,
+      )
+    }
+
+    if (result.rows[0]?.reclaimed) {
+      this.logger.warn(
+        `Reclaimed a stale sync lock for feed ${this.feedCode}; ` +
+          `a previous sync most likely exited without releasing it`,
       )
     }
   }

@@ -5,6 +5,7 @@ import * as Sentry from "@sentry/node"
 import { CronJob, validateCronExpression } from "cron"
 import { exec } from "node:child_process"
 import { FeedService } from "./feed.service"
+import { FeedCacheGeneration } from "../cache/feed-cache-generation.service"
 
 export interface SyncFeedOptions {
   force?: boolean
@@ -19,6 +20,7 @@ export class FeedSyncService implements OnModuleInit {
     private readonly feedService: FeedService,
     private readonly eventEmitter: EventEmitter2,
     private readonly schedulerRegistry: SchedulerRegistry,
+    private readonly feedCacheGeneration: FeedCacheGeneration,
   ) {}
 
   onModuleInit() {
@@ -104,6 +106,10 @@ export class FeedSyncService implements OnModuleInit {
 
       try {
         await provider.sync({ force: options.force })
+
+        // The feed's data has been replaced, so anything cached from the old
+        // data is now wrong. Retire it rather than let it serve until its TTL.
+        this.feedCacheGeneration.bump(feedCode)
       } catch (e: any) {
         Sentry.captureException(e, {
           level: "warning",

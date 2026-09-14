@@ -3,6 +3,7 @@ import { Global, Module } from "@nestjs/common"
 import { Cacheable, createKeyv as createKeyvMemory } from "cacheable"
 import Keyv from "keyv"
 import ms from "ms"
+import { FeedCacheGeneration } from "./feed-cache-generation.service"
 
 @Global()
 @Module({
@@ -26,7 +27,8 @@ import ms from "ms"
             : undefined,
         }),
     },
+    FeedCacheGeneration,
   ],
-  exports: [Cacheable],
+  exports: [Cacheable, FeedCacheGeneration],
 })
 export class CacheModule {}
