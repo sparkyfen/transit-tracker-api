@@ -26,7 +26,7 @@ import { ZipFileService } from "./zip-file.service"
 // How long a sync lock may be held before another sync treats it as abandoned.
 // Comfortably longer than any real import (they run in minutes), and short
 // enough that the next nightly sync recovers on its own.
-const STALE_SYNC_LOCK_SECONDS = 6 * 60 * 60
+export const STALE_SYNC_LOCK_SECONDS = 6 * 60 * 60
 
 /**
  * Takes the sync lock for a feed, reclaiming it if the previous holder left it
@@ -35,16 +35,20 @@ const STALE_SYNC_LOCK_SECONDS = 6 * 60 * 60
  * $1 = feed code, $2 = seconds after which a held lock counts as abandoned.
  * Returns no rows when a live sync still holds the lock. `xmax <> 0` is true
  * when the row was updated rather than inserted, i.e. a lock was reclaimed.
+ * The returned `locked_at` identifies this holder, so the release can tell
+ * its own lock from one a later sync has since reclaimed.
  */
 export const OBTAIN_SYNC_LOCK_SQL = `INSERT INTO sync_lock (feed_code) VALUES ($1)
    ON CONFLICT (feed_code) DO UPDATE SET locked_at = now()
      WHERE sync_lock.locked_at < now() - ($2 * interval '1 second')
-   RETURNING xmax <> 0 AS reclaimed`
+   RETURNING xmax <> 0 AS reclaimed, locked_at`
 
 @Injectable()
 export class GtfsSyncService {
   private readonly logger: Logger
   private readonly feedCode: string
+  // Set only while this instance holds the lock, to the locked_at it wrote.
+  private heldLockAt: string | null = null
 
   constructor(
     @Inject(REQUEST) { feedCode }: FeedContext<GtfsConfig>,
@@ -111,7 +115,8 @@ export class GtfsSyncService {
     return true
   }
 
-  async import(opts?: SyncOptions) {
+  /** Returns true when the feed's data was actually replaced. */
+  async import(opts?: SyncOptions): Promise<boolean> {
     const url = this.config.static.url
     this.logger.log(
       `Starting import of feed "${this.feedCode}" from URL ${url}`,
@@ -144,7 +149,7 @@ export class GtfsSyncService {
         const isNewer = await this.isResourceNewer(resourceMetadata)
         if (!isNewer) {
           this.logger.log("Feed is not newer; import not required")
-          return
+          return false
         }
       }
 
@@ -185,6 +190,8 @@ export class GtfsSyncService {
 
       this.logger.log("Cleaning up")
       await rimraf(directory)
+
+      return true
     } finally {
       await this.releaseSyncLock()
     }
@@ -211,6 +218,8 @@ export class GtfsSyncService {
       )
     }
 
+    this.heldLockAt = result.rows[0]?.locked_at ?? null
+
     if (result.rows[0]?.reclaimed) {
       this.logger.warn(
         `Reclaimed a stale sync lock for feed ${this.feedCode}; ` +
@@ -220,9 +229,28 @@ export class GtfsSyncService {
   }
 
   private async releaseSyncLock() {
-    await this.db.query("DELETE FROM sync_lock WHERE feed_code = $1", [
-      this.feedCode,
-    ])
+    // Only delete the row this instance wrote. An import that overruns the
+    // stale threshold has its lock reclaimed by the next sync; without this
+    // check its finally would delete the new holder's lock and let a third
+    // import start alongside the second.
+    if (this.heldLockAt === null) {
+      return
+    }
+
+    const lockedAt = this.heldLockAt
+    this.heldLockAt = null
+
+    const result = await this.db.query(
+      "DELETE FROM sync_lock WHERE feed_code = $1 AND locked_at = $2",
+      [this.feedCode, lockedAt],
+    )
+
+    if (result.rowCount === 0) {
+      this.logger.warn(
+        `Sync lock for feed ${this.feedCode} was reclaimed by another sync ` +
+          `before this one finished; leaving it alone`,
+      )
+    }
   }
 
   private async importFromDirectory(directory: string) {

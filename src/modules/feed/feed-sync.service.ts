@@ -105,11 +105,14 @@ export class FeedSyncService implements OnModuleInit {
       this.logger.log(`Syncing feed "${feedCode}"`)
 
       try {
-        await provider.sync({ force: options.force })
+        const dataChanged = await provider.sync({ force: options.force })
 
-        // The feed's data has been replaced, so anything cached from the old
-        // data is now wrong. Retire it rather than let it serve until its TTL.
-        this.feedCacheGeneration.bump(feedCode)
+        // Only when the data was actually replaced: a nightly run that finds
+        // nothing newer must not throw away a whole feed's warm cache.
+        if (dataChanged) {
+          this.feedCacheGeneration.bump(feedCode)
+          this.logger.log(`Retired cached data for feed "${feedCode}"`)
+        }
       } catch (e: any) {
         Sentry.captureException(e, {
           level: "warning",

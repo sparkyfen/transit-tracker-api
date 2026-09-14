@@ -82,8 +82,8 @@ export class GtfsService implements FeedProvider {
     )
   }
 
-  async sync(opts?: SyncOptions): Promise<void> {
-    await this.syncService.import(opts)
+  async sync(opts?: SyncOptions): Promise<boolean> {
+    return this.syncService.import(opts)
   }
 
   async getLastSync(): Promise<Date> {
