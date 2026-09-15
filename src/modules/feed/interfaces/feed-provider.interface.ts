@@ -46,7 +46,8 @@ export interface SyncOptions {
 }
 
 export interface FeedProvider {
-  sync?(opts?: SyncOptions): Promise<void>
+  /** Resolves true when the sync replaced the feed's data. */
+  sync?(opts?: SyncOptions): Promise<boolean | void>
   getLastSync?(): Promise<Date | null>
   getMetadata?(): Promise<Record<string, any>>
 

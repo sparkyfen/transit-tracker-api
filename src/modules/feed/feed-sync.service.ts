@@ -5,6 +5,7 @@ import * as Sentry from "@sentry/node"
 import { CronJob, validateCronExpression } from "cron"
 import { exec } from "node:child_process"
 import { FeedService } from "./feed.service"
+import { FeedCacheGeneration } from "../cache/feed-cache-generation.service"
 
 export interface SyncFeedOptions {
   force?: boolean
@@ -19,6 +20,7 @@ export class FeedSyncService implements OnModuleInit {
     private readonly feedService: FeedService,
     private readonly eventEmitter: EventEmitter2,
     private readonly schedulerRegistry: SchedulerRegistry,
+    private readonly feedCacheGeneration: FeedCacheGeneration,
   ) {}
 
   onModuleInit() {
@@ -103,7 +105,14 @@ export class FeedSyncService implements OnModuleInit {
       this.logger.log(`Syncing feed "${feedCode}"`)
 
       try {
-        await provider.sync({ force: options.force })
+        const dataChanged = await provider.sync({ force: options.force })
+
+        // Only when the data was actually replaced: a nightly run that finds
+        // nothing newer must not throw away a whole feed's warm cache.
+        if (dataChanged) {
+          this.feedCacheGeneration.bump(feedCode)
+          this.logger.log(`Retired cached data for feed "${feedCode}"`)
+        }
       } catch (e: any) {
         Sentry.captureException(e, {
           level: "warning",

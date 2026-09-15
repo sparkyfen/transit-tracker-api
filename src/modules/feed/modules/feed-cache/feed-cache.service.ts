@@ -5,6 +5,7 @@ import { SentryTraced } from "@sentry/nestjs"
 import * as Sentry from "@sentry/node"
 import { Cacheable } from "cacheable"
 import { MetricService } from "nestjs-otel"
+import { FeedCacheGeneration } from "../../../cache/feed-cache-generation.service"
 import type { FeedContext } from "../../interfaces/feed-provider.interface"
 
 @Injectable()
@@ -19,6 +20,7 @@ export class FeedCacheService {
   constructor(
     private readonly cacheManager: Cacheable,
     @Inject(REQUEST) { feedCode }: FeedContext,
+    private readonly generation: FeedCacheGeneration,
     @Optional() metricService?: MetricService,
   ) {
     this.feedCode = feedCode
@@ -64,7 +66,7 @@ export class FeedCacheService {
     }
 
     const getValue = async () => {
-      const cacheKey = `${this.feedCode}-${key}`
+      const cacheKey = `${this.feedCode}-g${this.generation.current(this.feedCode)}-${key}`
       const cached = await this.cacheManager.get<T>(cacheKey)
       if (cached !== undefined) {
         span?.setAttribute("cache.hit", true)
