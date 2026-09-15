@@ -1,6 +1,9 @@
 FROM node:24-alpine AS base
 
-RUN npm i -g pnpm
+# Pinned to the major CI uses (pnpm/action-setup in .github/workflows).
+# Unpinned, a new pnpm major changes install behaviour under us: 10 turned
+# ignored dependency build scripts into a hard error and broke this build.
+RUN npm i -g pnpm@10
 
 FROM base AS dependencies
 
