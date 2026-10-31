@@ -34,7 +34,7 @@ export interface ScheduleTrip {
   remainingTrips?: number  // Number of trips remaining after this one for the same route/stop today
   tripsRemainingToday?: number  // Trips remaining for the rest of the GTFS service day for the same route/stop. Set by GTFS-static providers; undefined when only realtime data is available.
   delaySeconds?: number  // Seconds the realtime prediction differs from the static schedule. Positive = late, negative = early. Undefined when no realtime data is available.
-  walkingOffsetSeconds?: number  // Walking-time offset that was applied to arrivalTime/departureTime when walkingFrom was provided in the subscription. Negative = walking time subtracted. Undefined when walkingFrom was not provided. Lets clients reconstruct the underlying arrival time (= arrivalTime - walkingOffsetSeconds).
+  walkingOffsetSeconds?: number  // Total offset that was applied to arrivalTime/departureTime when walkingFrom was provided in the subscription: the computed walking time plus any per-pair offset from routeStopPairs. Negative = time subtracted. Undefined when walkingFrom was not provided or the stop could not be resolved. Lets clients reconstruct the underlying arrival time (= arrivalTime - walkingOffsetSeconds).
 }
 
 export interface ScheduleUpdate {
@@ -51,8 +51,9 @@ export interface ScheduleOptions {
   listMode?: "sequential" | "nextPerRoute"
   // When set, the API computes per-stop walking-time offsets
   // (haversine(walkingFrom, stop) / walkSpeedMs) and applies them as
-  // negative offsets to each trip's arrival/departure times, in place
-  // of any per-pair offset provided in `routes`.
+  // negative offsets to each trip's arrival/departure times, added to
+  // any per-pair offset provided in `routes` (which then acts as a fixed
+  // buffer, e.g. time to reach an underground platform).
   walkingFrom?: { lat: number; lon: number }
   walkSpeedMs?: number
 }
@@ -83,6 +84,24 @@ export function walkingOffsetSecondsForStop(
 ): number {
   const secs = Math.round(haversineMeters(walkingFrom, stop) / walkSpeedMs)
   return secs === 0 ? 0 : -secs
+}
+
+// Combines the computed walking offset for a stop with the per-pair offset
+// from the subscription. With a walking offset, the pair offset is added on
+// top (a fixed buffer such as platform access time) and the total is reported
+// as walkingOffsetSeconds so clients can back out the true arrival time.
+// Without one (walkingFrom not set, or the stop failed to resolve), the pair
+// offset alone applies and walkingOffsetSeconds stays undefined.
+// Exported for unit testing.
+export function effectiveOffsetSeconds(
+  walkingOffset: number | undefined,
+  pairOffset: number | undefined,
+): { offset: number; walkingOffsetSeconds: number | undefined } {
+  if (walkingOffset === undefined) {
+    return { offset: pairOffset ?? 0, walkingOffsetSeconds: undefined }
+  }
+  const total = walkingOffset + (pairOffset ?? 0)
+  return { offset: total, walkingOffsetSeconds: total }
 }
 
 @Injectable()
@@ -122,7 +141,7 @@ export class ScheduleService {
       await provider.getUpcomingTripsForRoutesAtStops(routes)
 
     // If walkingFrom is provided, compute per-stop walking-time offsets in
-    // parallel. These override any per-pair offsets passed in `routes`.
+    // parallel. These are added to any per-pair offsets passed in `routes`.
     const walkingOffsetByStop = new Map<string, number>()
     if (walkingFrom) {
       const uniqueStopIds = Array.from(
@@ -157,13 +176,16 @@ export class ScheduleService {
         const pairOffset = routes.find(
           (r) => r.routeId === trip.routeId && r.stopId === trip.stopId,
         )?.offset
-        const offset = walkingOffset ?? pairOffset ?? 0
+        const { offset, walkingOffsetSeconds } = effectiveOffsetSeconds(
+          walkingOffset,
+          pairOffset,
+        )
 
         return {
           ...trip,
           arrivalTime: new Date(trip.arrivalTime).getTime() / 1000 + offset,
           departureTime: new Date(trip.departureTime).getTime() / 1000 + offset,
-          walkingOffsetSeconds: walkingOffset,
+          walkingOffsetSeconds,
         }
       })
       .filter((trip) => trip[sortKey] > Date.now() / 1000)
