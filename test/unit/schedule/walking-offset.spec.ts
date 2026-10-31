@@ -44,3 +44,54 @@ describe("walkingOffsetSecondsForStop", () => {
     expect(offset).toBeGreaterThan(-780)
   })
 })
+
+import { effectiveOffsetSeconds } from "src/schedule/schedule.service"
+
+describe("effectiveOffsetSeconds", () => {
+  it("adds the per-stop offset on top of the walking offset", () => {
+    // 8 min walk plus a 3 min platform-access buffer configured on the stop
+    expect(effectiveOffsetSeconds(-480, -180)).toEqual({
+      offset: -660,
+      walkingOffsetSeconds: -660,
+    })
+  })
+
+  it("reports the combined value so clients can back out the true arrival", () => {
+    const result = effectiveOffsetSeconds(-480, -180)
+    const arrival = 1_000_000
+    const shifted = arrival + result.offset
+    expect(shifted - result.walkingOffsetSeconds!).toBe(arrival)
+  })
+
+  it("uses the walking offset alone when the stop has no offset", () => {
+    expect(effectiveOffsetSeconds(-480, undefined)).toEqual({
+      offset: -480,
+      walkingOffsetSeconds: -480,
+    })
+    expect(effectiveOffsetSeconds(-480, 0)).toEqual({
+      offset: -480,
+      walkingOffsetSeconds: -480,
+    })
+  })
+
+  it("falls back to the per-stop offset when no walking offset was computed", () => {
+    expect(effectiveOffsetSeconds(undefined, -180)).toEqual({
+      offset: -180,
+      walkingOffsetSeconds: undefined,
+    })
+  })
+
+  it("is zero with no walking offset and no per-stop offset", () => {
+    expect(effectiveOffsetSeconds(undefined, undefined)).toEqual({
+      offset: 0,
+      walkingOffsetSeconds: undefined,
+    })
+  })
+
+  it("keeps a zero walking offset (sign at the stop) distinct from none", () => {
+    expect(effectiveOffsetSeconds(0, -180)).toEqual({
+      offset: -180,
+      walkingOffsetSeconds: -180,
+    })
+  })
+})
